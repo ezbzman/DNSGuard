@@ -1,0 +1,6 @@
+# build output (download the exe from Releases or run Build-EXE.bat)
+dist/
+build/
+__pycache__/
+*.pyc
+*.spec
