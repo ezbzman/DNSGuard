@@ -6,6 +6,7 @@ where py >nul 2>&1 && (set "PY=py -3") || (set "PY=python")
 %PY% -m pip install --upgrade -r requirements.txt || goto :fail
 %PY% -m PyInstaller --noconfirm --clean --onefile --noconsole --name DNSGuard ^
   --hidden-import dnslib --hidden-import cryptography ^
+  --add-data "assets\wallpaper.jpg;assets" ^
   dnsguard.py || goto :fail
 echo.
 echo Built: %~dp0dist\DNSGuard.exe

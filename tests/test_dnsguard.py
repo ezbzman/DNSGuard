@@ -47,6 +47,14 @@ class TestDomains(unittest.TestCase):
 
 
 class TestWhitelist(unittest.TestCase):
+    def test_start_page_allowed_by_default(self):
+        wl = dnsguard.Whitelist(domains=dnsguard.DEFAULT_WHITELIST)
+        host = dnsguard.normalize_domain(dnsguard.START_PAGE_URL)
+        self.assertEqual(host, "vote.softgiginc.com")
+        self.assertEqual(wl.match(host), "domain")
+        self.assertEqual(wl.match("softgiginc.com"), "domain")
+        self.assertEqual(wl.match("any.sub.softgiginc.com"), "domain")
+
     def test_domain_covers_subdomains(self):
         wl = dnsguard.Whitelist(domains=["example.com"], exact=["only.this.org"])
         self.assertEqual(wl.match("example.com"), "domain")
@@ -268,3 +276,20 @@ class TestHostsMarker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLogonTask(unittest.TestCase):
+    def test_xml_runs_logon_for_all_users(self):
+        xml = dnsguard.logon_task_xml()
+        self.assertIn("<LogonTrigger>", xml)
+        self.assertIn("<GroupId>S-1-5-32-545</GroupId>", xml)
+        self.assertIn("logon</Arguments>", xml)
+        self.assertNotIn("__CMD__", xml)
+
+    def test_wallpaper_is_bundled(self):
+        self.assertTrue(dnsguard.bundled_wallpaper().exists())
+
+    def test_logon_command_parses(self):
+        args = dnsguard.build_parser().parse_args(["logon", "--no-browser"])
+        self.assertEqual(args.command, "logon")
+        self.assertTrue(args.no_browser)

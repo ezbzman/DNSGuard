@@ -30,6 +30,12 @@ Target PCs do not need Python.
   configuration in an administrators-only folder. A standard user cannot change
   DNS, stop the task or edit the list. (A local administrator can always bypass a
   DNS filter; this tool is meant for PCs where workers are standard users.)
+* **Desktop picture and start page.** At every sign-in a small task (*DNSGuard
+  Logon*, runs as the signed-in user) sets the desktop picture to
+  "Protected by DNSGuard" and opens Microsoft Edge at `https://vote.softgiginc.com/`.
+  This works on Windows Home too. A user may change the picture; it comes back at
+  the next sign-in. (The lock screen is not changed: Windows Home offers no
+  supported way to set it.)
 * **Live updates.** Allowing a website from the block page or the manager takes
   effect immediately; the DNS cache is flushed automatically.
 
@@ -44,7 +50,8 @@ The block page offers both choices: *Allow sub.example.com only* and
 *Allow example.com (and all subdomains)*.
 
 Out of the box the list contains only what Windows needs (updates, time sync,
-certificate checks, the connectivity test). Add your work sites after installing.
+certificate checks, the connectivity test) plus `softgiginc.com` and all its
+subdomains, for the start page. Add your work sites after installing.
 
 ## Install
 
@@ -82,7 +89,7 @@ Scripted install (for rolling out to several PCs, run as administrator):
 Start Menu → *Uninstall DNSGuard*, the *Uninstall* button in the manager, or
 `DNSGuard.exe uninstall`. Requires the password. It stops the filter, restores the
 previous DNS settings on every adapter (DHCP where it was DHCP), removes the
-scheduled task, Start Menu entries, browser policies, the root certificate and all
+scheduled tasks, Start Menu entries, browser policies, the root certificate and all
 files in `C:\ProgramData\DNSGuard`.
 
 Emergency recovery if the password is lost: an administrator can run
@@ -97,6 +104,7 @@ reset DNS by hand with
 | `C:\ProgramData\DNSGuard\DNSGuard.exe`      | installed copy used by the task and shortcuts |
 | `C:\ProgramData\DNSGuard\blocked.log`       | tab-separated `time  name  qtype`, trimmed at 2 MB |
 | `C:\ProgramData\DNSGuard\dnsguard.err`      | exceptions and notices                        |
+| `C:\ProgramData\DNSGuard\wallpaper.jpg`     | the desktop picture                           |
 | `C:\ProgramData\DNSGuard\ca.crt`            | the local root certificate (public part)      |
 | `C:\ProgramData\DNSGuard\private\`          | admin-only: `config.json`, `ca.key`, DNS snapshot |
 
@@ -111,6 +119,7 @@ reset DNS by hand with
     DNSGuard.exe status
     DNSGuard.exe allow <domain> [--exact] [--password P]
     DNSGuard.exe start
+    DNSGuard.exe logon [--no-browser]   set the desktop picture and open the start page
     DNSGuard.exe run             the service itself (used by the scheduled task)
     -q / --quiet                 no message boxes (scripts)
 
@@ -119,6 +128,9 @@ reset DNS by hand with
 Requires Python 3.12 on the build machine only.
 
     Build-EXE.bat                → dist\DNSGuard.exe
+
+The desktop picture is `assets/wallpaper.jpg`, rendered from `assets/wallpaper.html`
+(`node tools/render_wallpaper.js`, needs Playwright) and bundled into the exe.
 
 Dependencies: `dnslib`, `cryptography` (runtime) and `pyinstaller` (build). Tk is
 part of the standard Python install.

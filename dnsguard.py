@@ -16,6 +16,7 @@ Sub-commands (run `DNSGuard.exe <command>`):
   status     show whether the filter is running
   allow      add a website from the command line (password required)
   start      start the filter service if it is not running
+  logon      set the desktop picture and open the start page (run at each sign-in)
 
 Without a command the program installs itself if not installed, otherwise it
 opens the manager window.
@@ -53,9 +54,10 @@ from pathlib import Path
 
 from dnslib import AAAA, QTYPE, RCODE, RR, A, DNSRecord
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 APP_NAME = "DNSGuard"
 TASK_NAME = "DNSGuard"
+LOGON_TASK_NAME = "DNSGuard Logon"
 CA_COMMON_NAME = "DNSGuard Local CA"
 
 IS_WINDOWS = os.name == "nt"
@@ -77,6 +79,7 @@ BLOCKED_LOG = DATA_DIR / "blocked.log"
 ERR_LOG = DATA_DIR / "dnsguard.err"
 INSTALL_MARKER = DATA_DIR / "installed.json"
 INSTALLED_EXE = DATA_DIR / f"{APP_NAME}.exe"
+WALLPAPER_FILE = DATA_DIR / "wallpaper.jpg"
 START_MENU_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Microsoft/Windows/Start Menu/Programs" / APP_NAME
 
 UPSTREAMS = [("1.1.1.1", 53), ("8.8.8.8", 53)]
@@ -86,6 +89,10 @@ DNS_REAPPLY_SECONDS = 300
 API_PREFIX = "/__dnsguard/"
 API_HEADER = "X-DNSGuard"
 PBKDF2_ITERATIONS = 200_000
+
+# Opened in Edge at every sign-in. Its domain is always on the allowed list.
+START_PAGE_URL = "https://vote.softgiginc.com/"
+START_PAGE_DOMAIN = "softgiginc.com"
 
 # Domains Windows itself needs so that updates, time sync, certificate
 # revocation checks and the "connected to the internet" check keep working.
@@ -106,6 +113,7 @@ DEFAULT_WHITELIST = [
     "sectigo.com",
     "usertrust.com",
     "pki.goog",
+    START_PAGE_DOMAIN,
 ]
 
 # Names that are never filtered: they belong to the local network.
@@ -1695,6 +1703,65 @@ def task_exists():
     return run_cmd(["schtasks.exe", "/Query", "/TN", TASK_NAME]).returncode == 0
 
 
+# Runs `DNSGuard.exe logon` as each user (BUILTIN\Users) when they sign in.
+LOGON_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>DNSGuard desktop picture and start page</Description><Author>DNSGuard</Author></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
+  <Principals><Principal id="Author"><GroupId>S-1-5-32-545</GroupId><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>__CMD__</Command><Arguments>__ARGS__</Arguments></Exec></Actions>
+</Task>
+"""
+
+
+def logon_task_xml():
+    cmd = installed_command()
+    return LOGON_TASK_XML.replace("__CMD__", html.escape(cmd[0])).replace(
+        "__ARGS__", html.escape(" ".join(_quote(a) for a in cmd[1:] + ["logon"])))
+
+
+def create_logon_task():
+    xml_path = PRIVATE_DIR / "logon_task.xml"
+    xml_path.write_text(logon_task_xml(), encoding="utf-16")
+    res = run_cmd(["schtasks.exe", "/Create", "/TN", LOGON_TASK_NAME, "/XML", str(xml_path), "/F"])
+    if res.returncode != 0:
+        raise RuntimeError(f"schtasks /Create failed: {res.stdout.strip()} {res.stderr.strip()}")
+
+
+def delete_logon_task():
+    run_cmd(["schtasks.exe", "/Delete", "/TN", LOGON_TASK_NAME, "/F"])
+
+
+def bundled_wallpaper():
+    """The wallpaper shipped inside the exe (PyInstaller unpacks it to _MEIPASS)."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / "assets" / "wallpaper.jpg"
+
+
+def set_desktop_wallpaper(path=WALLPAPER_FILE):
+    """Set the current user's desktop picture (style: fill). Works on every Windows edition."""
+    import winreg
+
+    if not Path(path).exists():
+        return False
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop", 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "WallpaperStyle", 0, winreg.REG_SZ, "10")
+        winreg.SetValueEx(key, "TileWallpaper", 0, winreg.REG_SZ, "0")
+    SPI_SETDESKWALLPAPER, SPIF_UPDATEINIFILE, SPIF_SENDCHANGE = 0x0014, 0x01, 0x02
+    return bool(ctypes.windll.user32.SystemParametersInfoW(
+        SPI_SETDESKWALLPAPER, 0, str(path), SPIF_UPDATEINIFILE | SPIF_SENDCHANGE))
+
+
 def create_shortcuts():
     cmd = installed_command()
     START_MENU_DIR.mkdir(parents=True, exist_ok=True)
@@ -1839,6 +1906,8 @@ def install_core(password, extra_allow=(), log_only=False, progress=print):
             pass
     if password:
         cfg.data["password"] = hash_password(password)
+    if START_PAGE_DOMAIN not in cfg.data["allow_domains"]:
+        cfg.data["allow_domains"].append(START_PAGE_DOMAIN)  # upgrades keep the start page reachable
     cfg.data["created"] = cfg.data.get("created") or now_iso()
     cfg.data["version"] = VERSION
     cfg.data["log_only"] = bool(log_only)
@@ -1856,6 +1925,9 @@ def install_core(password, extra_allow=(), log_only=False, progress=print):
 
     progress("Registering startup task")
     create_scheduled_task()
+    if bundled_wallpaper().exists():
+        shutil.copy2(bundled_wallpaper(), WALLPAPER_FILE)
+    create_logon_task()
     create_shortcuts()
     register_uninstall_entry(True)
     INSTALL_MARKER.write_text(json.dumps({"version": VERSION, "installed": now_iso(),
@@ -1874,6 +1946,10 @@ def install_core(password, extra_allow=(), log_only=False, progress=print):
     progress("Pointing network adapters at the filter")
     apply_dns_to_adapters()
     flush_dns_cache()
+    try:
+        set_desktop_wallpaper()  # the installing user; everyone else gets it at their next sign-in
+    except Exception as exc:
+        log_err("set wallpaper failed", exc)
 
 
 def uninstall_core(stop_service=True, progress=lambda m: None):
@@ -1889,6 +1965,7 @@ def uninstall_core(stop_service=True, progress=lambda m: None):
         kill_other_instances()
     progress("Removing task, shortcuts, policies and certificate")
     delete_scheduled_task()
+    delete_logon_task()
     remove_shortcuts()
     set_browser_policies(False)
     register_uninstall_entry(False)
@@ -2598,6 +2675,21 @@ def cmd_start(args):
     say("The filter did not start. Check dnsguard.err.", error=True)
 
 
+def cmd_logon(args):
+    """Run at each sign-in by the logon task, as the signed-in user."""
+    if not IS_WINDOWS:
+        return
+    try:
+        set_desktop_wallpaper()
+    except Exception as exc:
+        log_err("set wallpaper failed", exc)
+    if not args.no_browser:
+        try:
+            os.startfile("microsoft-edge:" + START_PAGE_URL)
+        except OSError as exc:
+            log_err("open start page failed", exc)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog=APP_NAME, description="DNSGuard whitelist web filter")
     p.add_argument("--version", action="version", version=f"{APP_NAME} {VERSION}")
@@ -2637,6 +2729,9 @@ def build_parser():
     s.add_argument("--password")
 
     sub.add_parser("start", help="start the filter service")
+
+    s = sub.add_parser("logon", help="set the desktop picture and open the start page")
+    s.add_argument("--no-browser", action="store_true", help="only set the desktop picture")
     return p
 
 
@@ -2654,6 +2749,7 @@ def main(argv=None):
     handlers = {
         "install": cmd_install, "run": cmd_run, "manage": cmd_manage, "uninstall": cmd_uninstall,
         "pause": cmd_pause, "resume": cmd_resume, "status": cmd_status, "allow": cmd_allow, "start": cmd_start,
+        "logon": cmd_logon,
     }
     try:
         return handlers[args.command](args) or 0
