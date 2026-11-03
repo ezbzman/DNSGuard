@@ -90,6 +90,88 @@ Emergency recovery if the password is lost: an administrator can run
 reset DNS by hand with
 `Set-DnsClientServerAddress -InterfaceIndex <n> -ResetServerAddresses`.
 
+## Recovery after a broken removal
+
+If DNSGuard is removed abnormally — most often an **antivirus quarantines
+`DNSGuard.exe`** — the executable disappears but the machine's settings do not.
+The adapters still point their DNS at `127.0.0.1` / `::1`, but nothing is
+listening there any more, so name resolution fails and the PC looks offline. The
+scheduled task, the root certificate and the browser policies are also left
+behind.
+
+`Reset-DNSGuard.bat` + `Reset-DNSGuard.ps1` (in the repo root) repair this. They
+undo **every** change a normal install makes, each step guarded so one failure
+never stops the rest:
+
+1. Stop and delete the `DNSGuard` scheduled task.
+2. Stop any running `DNSGuard.exe`.
+3. Restore DNS on every adapter — from the saved snapshot if it still exists,
+   otherwise reset any adapter still pointing at loopback back to automatic (DHCP).
+4. Remove the `DNSGuard Local CA` certificate from the machine's Trusted Root store.
+5. Remove the DNS-over-HTTPS policies set for Chrome, Edge and Firefox.
+6. Remove the Add/Remove Programs entry, Start Menu folder and hosts-file markers.
+7. Remove `C:\ProgramData\DNSGuard` and flush the DNS cache.
+
+It needs administrator rights, is safe to run on a PC that never had DNSGuard,
+and is safe to run more than once.
+
+**On a single PC:** copy both files to the PC, right-click `Reset-DNSGuard.bat`
+→ *Run as administrator* (or just double-click — it self-elevates). Then test
+with `nslookup microsoft.com` and reopen the browser.
+
+**Across many PCs (RMM / Intune / PsExec / remote PowerShell):** run the `.ps1`
+directly in an already-elevated context:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\Reset-DNSGuard.ps1
+
+Add `-AllAdapters` to reset DNS on every adapter to automatic, not only the ones
+still pointing at loopback (use if an adapter was manually repointed after the
+breakage).
+
+> If the snapshot folder is gone (the usual case after an AV removal), step 3
+> resets the affected adapters to **DHCP**. A PC that had *static* DNS before
+> DNSGuard will come back on DHCP; set its static servers again by hand.
+
+## Keeping antivirus from quarantining DNSGuard
+
+DNSGuard legitimately does things that behavior-based antivirus treats as
+suspicious — it rewrites every adapter's DNS, installs a root certificate, runs
+as SYSTEM from a boot task and answers DNS locally. On top of that the shipped
+binary is an **unsigned PyInstaller `--onefile` build**, which is one of the most
+common false-positive triggers there is: a single executable that unpacks itself
+to `%TEMP%` at launch and has no code-signing reputation looks, to a heuristic
+engine, exactly like a dropper. The fixes, strongest first:
+
+1. **Code-sign the executable.** This is the real solution. Sign
+   `dist\DNSGuard.exe` with an Authenticode certificate (`signtool sign /fd SHA256
+   /tr <timestamp-url> /td SHA256 DNSGuard.exe`). A standard OV certificate helps;
+   an **EV** certificate earns SmartScreen/Defender reputation almost
+   immediately. A consistent signed publisher identity is what AV engines use to
+   trust a program, and it also lets you write publisher-based allow rules instead
+   of fragile path/hash rules.
+2. **Allowlist it in the antivirus you run.** On machines you administer this is
+   entirely appropriate — it is your own software. Add an exception for the
+   publisher (once signed) or for `C:\ProgramData\DNSGuard\DNSGuard.exe` in your
+   AV's central console (Defender, SentinelOne, CrowdStrike, Sophos, etc.) and
+   push it to the fleet *before* deploying. For Microsoft Defender specifically,
+   a process/path exclusion via Intune or Group Policy
+   (`Add-MpPreference -ExclusionPath`) survives reinstalls.
+3. **Report false positives to the vendors.** Submit the signed binary to
+   Microsoft at the Security Intelligence submission portal, and to any other AV
+   vendor on your fleet. Once reviewed, the detection is cleared for everyone, so
+   future versions stop getting pulled.
+4. **Make the build look less like a dropper.** Prefer PyInstaller `--onedir`
+   over `--onefile` (no self-extraction to `%TEMP%`), do **not** enable UPX
+   compression (`--noupx`), and embed a proper version resource and application
+   manifest (`--version-file`). A onedir build wrapped in a signed MSI is far less
+   likely to be flagged than a bare onefile EXE.
+
+These are false-positive-reduction and allowlisting measures for software you own
+and deploy on your own managed PCs — not ways to hide the tool from a user or
+from security software that is supposed to catch it. If an AV keeps removing an
+*unsigned* binary, treat that as expected and sign it rather than fighting the
+engine.
+
 ## Files
 
 | Path                                        | Purpose                                      |
